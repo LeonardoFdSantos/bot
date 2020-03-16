@@ -3,6 +3,7 @@ import binascii
 import logging
 import re
 import struct
+import typing as t
 from datetime import datetime
 
 from discord import Colour, Message
@@ -53,8 +54,9 @@ class TokenRemover(Cog):
 
         See: https://discordapp.com/developers/docs/reference#snowflakes
         """
-        if self.is_token_in_message(msg):
-            await self.take_action(msg)
+        has_possible_token, found_token = self.is_token_in_message(msg)
+        if has_possible_token:
+            await self.take_action(msg, found_token)
 
     @Cog.listener()
     async def on_message_edit(self, before: Message, after: Message) -> None:
@@ -63,12 +65,13 @@ class TokenRemover(Cog):
 
         See: https://discordapp.com/developers/docs/reference#snowflakes
         """
-        if self.is_token_in_message(after):
-            await self.take_action(after)
+        has_possible_token, found_token = self.is_token_in_message(after)
+        if has_possible_token:
+            await self.take_action(after, found_token)
 
-    async def take_action(self, msg: Message) -> None:
+    async def take_action(self, msg: Message, found_token: str) -> None:
         """Remove the `msg` containing a token an send a mod_log message."""
-        user_id, creation_timestamp, hmac = TOKEN_RE.search(msg.content).group(0).split('.')
+        user_id, creation_timestamp, hmac = found_token.split('.')
         self.mod_log.ignore(Event.message_delete, msg.id)
         await msg.delete()
         await msg.channel.send(DELETION_MESSAGE_TEMPLATE.format(mention=msg.author.mention))
@@ -91,18 +94,25 @@ class TokenRemover(Cog):
         )
 
     @classmethod
-    def is_token_in_message(cls, msg: Message) -> bool:
-        """Check if `msg` contains a seemly valid token."""
+    def is_token_in_message(cls, msg: Message) -> t.Tuple[bool, t.Optional[str]]:
+        """
+        Check if `msg` contains a seemly valid token.
+
+        If found, the first matching substring will be optionally returned for use in the logging statement.
+        """
         if msg.author.bot:
-            return False
+            return False, None
 
         # Use findall rather than search to guard against method calls prematurely returning the
         # token check (e.g. `message.channel.send` also matches our token pattern)
         maybe_matches = TOKEN_RE.findall(msg.content)
-        if not maybe_matches:
-            return False
+        for substr in maybe_matches:
+            if cls.is_maybe_token(substr):
+                # Short-circuit on first match
+                return True, substr
 
-        return any(cls.is_maybe_token(substr) for substr in maybe_matches)
+        # No matching substring
+        return False, None
 
     @classmethod
     def is_maybe_token(cls, test_str: str) -> bool:
